@@ -1,0 +1,7 @@
+modules:
+  default:
+    collectors:
+      - bmc
+      - ipmi
+      - dcmi
+      - sel

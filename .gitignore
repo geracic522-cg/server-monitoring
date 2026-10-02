@@ -1,0 +1,10 @@
+.env
+*.db
+*.log
+data/
+__pycache__/
+*.pyc
+prometheus/prometheus.yml
+!prometheus/prometheus.yml.example
+digest/daily_digest.py
+!digest/daily_digest.py.example

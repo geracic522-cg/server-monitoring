@@ -1,0 +1,127 @@
+services:
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    user: nobody
+    volumes:
+      - prometheus-data:/prometheus   # FILL IN external name below from docker inspect
+      - /home/cgeraci/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-admin-api'
+    networks:
+      - monitoring
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    user: "472"
+    volumes:
+      - grafana-data:/var/lib/grafana   # FILL IN external name below from docker inspect
+    environment:
+      GF_SMTP_ENABLED: "true"
+      GF_SMTP_HOST: "smtp.gmail.com:587"
+      GF_SMTP_USER: "${GF_SMTP_USER}"
+      GF_SMTP_PASSWORD: "${GF_SMTP_PASSWORD}"
+      GF_SMTP_FROM_ADDRESS: "${GF_SMTP_USER}"
+      GF_SMTP_FROM_NAME: "Home Server Monitoring"
+    networks:
+      - monitoring
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+  uptime-kuma:
+    image: louislam/uptime-kuma
+    container_name: uptime-kuma
+    volumes:
+      - uptime-kuma-data:/app/data   # FILL IN external name below from docker inspect
+    networks:
+      - monitoring
+    ports:
+      - "3001:3001"
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter
+    container_name: node-exporter
+    user: nobody
+    pid: host
+    volumes:
+      - /:/host:ro
+      - /var/lib/node_exporter/textfile_collector:/textfile_collector:ro
+    command:
+      - '--path.rootfs=/host'
+      - '--collector.textfile.directory=/textfile_collector'
+    networks:
+      - monitoring
+    ports:
+      - "9100:9100"
+    restart: unless-stopped
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor
+    container_name: cadvisor
+    volumes:
+      - /var/run:/var/run:ro
+      - /:/rootfs:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+    networks:
+      - monitoring
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  smartctl-exporter:
+    image: prometheuscommunity/smartctl-exporter
+    container_name: smartctl-exporter
+    user: root
+    privileged: true
+    volumes:
+      - /dev:/dev
+    networks:
+      - monitoring
+    ports:
+      - "9633:9633"
+    restart: unless-stopped
+
+  ipmi-exporter:
+    image: prometheuscommunity/ipmi-exporter
+    container_name: ipmi-exporter
+    user: root
+    privileged: true
+    command:
+      - '--config.file=/config.yml'
+    volumes:
+      - /home/cgeraci/monitoring/ipmi/config.yml:/config.yml
+      - /dev:/dev
+    networks:
+      - monitoring
+    ports:
+      - "9290:9290"
+    restart: unless-stopped
+
+volumes:
+  # IMPORTANT: replace `name:` below with the real anonymous volume hashes
+  # from `docker inspect prometheus grafana uptime-kuma` BEFORE running
+  # `docker compose up`, or compose will create fresh empty volumes and
+  # your existing Prometheus history / Grafana dashboards / Kuma monitor
+  # configs will be orphaned (not deleted, just no longer attached).
+  prometheus-data:
+    external: true
+    name: prometheus-data
+  grafana-data:
+    external: true
+    name: grafana-data
+  uptime-kuma-data:
+    external: true
+    name: uptime-kuma-data
+
+networks:
+  monitoring:
+    external: true

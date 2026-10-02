@@ -1,0 +1,121 @@
+import smtplib
+
+from email.mime.text import MIMEText
+import requests
+from datetime import datetime
+
+PROM_URL = "http://localhost:9090"
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 587
+SMTP_USER = "geracic522@gmail.com"
+SMTP_PASSWORD = REDACTED
+TO_ADDRESS = "geracic522@gmail.com"
+
+def query_instant(expr):
+    resp = requests.get(f"{PROM_URL}/api/v1/query", params={"query": expr})
+    return resp.json()["data"]["result"]
+
+def query_scalar(expr):
+    result = query_instant(expr)
+    if not result:
+        return None
+    return float(result[0]["value"][1])
+
+def query_range_stat(expr, stat):
+    resp = requests.get(f"{PROM_URL}/api/v1/query", params={
+        "query": f"{stat}_over_time(({expr})[24h:5m])"
+    })
+    result = resp.json()["data"]["result"]
+    if not result:
+        return None
+    return float(result[0]["value"][1])
+
+def fmt_duration(seconds):
+    if seconds is None:
+        return "no data"
+    hours = seconds / 3600
+    if hours < 48:
+        return f"{hours:.1f} hours"
+    return f"{hours / 24:.1f} days"
+
+def build_report():
+    lines = [f"Daily Server Health Digest — {datetime.now().strftime('%Y-%m-%d')}\n"]
+    alerts = []
+
+    # --- Baseline: always shown ---
+    lines.append("--- System ---")
+
+    node_uptime = query_scalar("time() - node_boot_time_seconds")
+    lines.append(f"Node Uptime: {fmt_duration(node_uptime)}")
+
+    ups_charge = query_scalar("ups_battery_charge_percent")
+    ups_runtime = query_scalar("ups_battery_runtime_seconds")
+    lines.append(f"UPS Charge: {ups_charge:.0f}%" if ups_charge is not None else "UPS Charge: no data")
+    lines.append(f"UPS Estimated Runtime: {fmt_duration(ups_runtime)}")
+
+    lines.append("\n--- Trends (last 24h) ---")
+    trend_metrics = {
+        "CPU Usage %": '100 - (avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)',
+        "RAM Usage %": '100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))',
+        "Root Disk Usage %": '100 * (1 - (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}))',
+        "Storage Array Usage %": '100 * (1 - (node_filesystem_avail_bytes{mountpoint="/mnt/storage"} / node_filesystem_size_bytes{mountpoint="/mnt/storage"}))',
+    }
+    for label, expr in trend_metrics.items():
+        avg_val = query_range_stat(expr, "avg")
+        max_val = query_range_stat(expr, "max")
+        if avg_val is not None and max_val is not None:
+            lines.append(f"{label}: avg {avg_val:.1f}%, max {max_val:.1f}%")
+        else:
+            lines.append(f"{label}: no data")
+
+    # --- Health checks: baseline summary + alert detail if anything's wrong ---
+    lines.append("\n--- Hardware & Service Health ---")
+
+    checks = [
+        ("RAID Arrays", "raid_array_healthy", "array"),
+        ("Drive SMART Health", "smartctl_device_smart_status{device=~\"sd[a-z]\"}", "device"),
+        ("Docker Containers", "docker_container_health != -1", "name"),
+        ("Uptime Kuma Monitors", "monitor_status", "monitor_name"),
+    ]
+
+    for label, expr, label_key in checks:
+        results = query_instant(expr)
+        if not results:
+            lines.append(f"{label}: no data")
+            continue
+        bad = [r for r in results if float(r["value"][1]) != 1]
+        total = len(results)
+        if bad:
+            names = ", ".join(r["metric"].get(label_key, "unknown") for r in bad)
+            lines.append(f"{label}: {len(bad)} of {total} FAILING — {names}")
+            alerts.append(f"{label}: {names}")
+        else:
+            lines.append(f"{label}: all {total} OK")
+
+    # --- Alert banner, only if something's actually wrong ---
+    if alerts:
+        lines.insert(1, "!!! ATTENTION NEEDED !!!")
+        for a in alerts:
+            lines.insert(2, f"  - {a}")
+        lines.insert(2 + len(alerts), "")
+
+    return "\n".join(lines)
+
+def send_email(body):
+    msg = MIMEText(body)
+    subject = "Daily Server Health Digest"
+    if "ATTENTION NEEDED" in body:
+        subject = "⚠️ Daily Server Health Digest — ACTION NEEDED"
+    msg["Subject"] = subject
+    msg["From"] = SMTP_USER
+    msg["To"] = TO_ADDRESS
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.send_message(msg)
+
+if __name__ == "__main__":
+    report = build_report()
+    send_email(report)
+    print(report)
